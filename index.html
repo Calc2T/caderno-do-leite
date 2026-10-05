@@ -579,51 +579,57 @@ textarea.copy{width:100%;min-height:220px;border:1px solid var(--line);border-ra
       <button role="tab" data-tab="ajustes" aria-selected="false">Ajustes</button>
     </nav>
   </header>
-  <main id="view"><div class="card loading"><b>Abrindo o caderno…</b><br><br>Se esta mensagem não sumir em alguns segundos, o programa que abriu o arquivo não roda aplicativos. Abra o arquivo pelo <b>Chrome</b> (Android) ou <b>Safari</b> (iPhone).</div></main><noscript><div class="app"><div class="card loading">Este leitor não executa o aplicativo. Abra o arquivo pelo Chrome ou Safari.</div></div></noscript>
+  <main id="view"><div class="card loading"><b>Abrindo o caderno…</b><br><br>Precisa de internet na primeira vez.</div></main><noscript><div class="app"><div class="card loading">Este leitor não executa o aplicativo. Abra o arquivo pelo Chrome ou Safari.</div></div></noscript>
 </div>
 <div class="savebar" id="savebar" hidden><div class="in"><p>Lista alterada e ainda não anotada</p><button class="btn ghost" data-act="desfazer">Desfazer</button><button class="btn primary" data-act="salvar">Anotar no caderno</button></div></div>
 <div class="overlay" id="overlay" hidden><div class="sheet" id="sheet" role="dialog" aria-modal="true"></div></div>
 <div id="toast" hidden></div>
 
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
+<script src="config.js"></script>
 <script>
-/* Versão do arquivo: guarda tudo neste aparelho (localStorage) */
+/* Versão compartilhada: dados no Firebase, iguais para todos que entram com login */
 (function(){
-const KEY='caderno-do-leite-v1';
-let store={};try{store=JSON.parse(localStorage.getItem(KEY)||'{}')||{}}catch(e){store={}}
-const ls=[];const clone=o=>JSON.parse(JSON.stringify(o));
-function save(){try{localStorage.setItem(KEY,JSON.stringify(store))}catch(e){throw {code:'unavailable',message:String(e)}}}
-function emit(){ls.slice().forEach(f=>{try{f()}catch(e){console.error(e)}})}
-function sub(f){ls.push(f);setTimeout(f,0);return()=>{const i=ls.indexOf(f);if(i>=0)ls.splice(i,1)}}
-const rid=()=>Date.now().toString(36)+Math.random().toString(36).slice(2,8);
-function doc(path){return{id:path.split('/').pop(),path,
-  get:async()=>({exists:path in store,data:()=>store[path]}),
-  set:async d=>{store[path]=clone(d);save();emit()},
-  update:async d=>{if(!(path in store))throw{code:'invalid_argument',message:'missing'};store[path]={...store[path],...clone(d)};save();emit()},
-  delete:async()=>{delete store[path];save();emit()},
-  onSnapshot:(next)=>sub(()=>next({id:path.split('/').pop(),exists:path in store,data:()=>store[path]}))}}
-function collection(path){const n=path.split('/').length+1;
-  const docs=()=>Object.keys(store).filter(k=>k.startsWith(path+'/')&&k.split('/').length===n).map(k=>({id:k.split('/').pop(),exists:true,data:()=>store[k]}));
-  return{path,doc:id=>doc(path+'/'+(id||rid())),add:async d=>{const r=doc(path+'/'+rid());await r.set(d);return r},
-    get:async()=>{const d=docs();return{docs:d,size:d.length,empty:!d.length}},
-    onSnapshot:(next)=>sub(()=>{const d=docs();next({docs:d,size:d.length,empty:!d.length})})}}
-if(!store['config/geral']){
-  store['config/geral']={preco:5};
-  const ex=[['ex1',{nome:'Exemplo – Dona Maria',endereco:'Rua das Flores, 120',turno:'manha',litros:2,regra:{tipo:'diario'},obs:'Deixar no portão',ordem:0}],
-    ['ex2',{nome:'Exemplo – Seu João',endereco:'Av. Brasil, 45',turno:'manha',litros:1,regra:{tipo:'semana',dias:[1,3,5]},obs:'',ordem:1}],
-    ['ex3',{nome:'Exemplo – Padaria Pão Quente',endereco:'Rua 7 de Setembro, 300',turno:'noite',litros:5,regra:{tipo:'intervalo',cada:2,inicio:(d=>d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'))(new Date())},obs:'',ordem:0}],
-    ['ex4',{nome:'Exemplo – Ana Paula',endereco:'Travessa do Sol, 12',turno:'noite',litros:1,regra:{tipo:'avulso'},obs:'Só quando ela pedir',ordem:1}]];
-  ex.forEach(([id,d])=>store['clientes/'+id]={...d,telefone:'',ativo:true,exemplo:true});
-  try{save()}catch(e){}
-}
+const cfg=window.FIREBASE_CONFIG;
+const bloqueia=msg=>{document.addEventListener('DOMContentLoaded',()=>{const v=document.getElementById('view');if(v)v.innerHTML='<div class="card loading">'+msg+'</div>'})};
 function baixar(filename,data,type){const blob=data instanceof Blob?data:new Blob([data],{type});const u=URL.createObjectURL(blob);const a=document.createElement('a');a.href=u;a.download=filename;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(u),4000)}
-const db={doc,collection};
 const dl={save:async({filename,data})=>{baixar(filename,data,filename.endsWith('.pdf')?'application/pdf':'application/octet-stream');return{status:'saved'}}};
+if(!window.firebase){bloqueia('Sem internet para abrir o caderno pela primeira vez. Conecte e tente de novo.');window.claude={use:n=>Promise.resolve(n==='downloads'?dl:null)};return}
+if(!cfg||!cfg.apiKey||String(cfg.apiKey).indexOf('COLE')===0){bloqueia('Falta configurar o Firebase no arquivo <b>config.js</b>.');window.claude={use:n=>Promise.resolve(n==='downloads'?dl:null)};return}
+firebase.initializeApp(cfg);
+const auth=firebase.auth();const fs=firebase.firestore();
+try{fs.enablePersistence({synchronizeTabs:true}).catch(()=>{})}catch(e){}
+let resolveDb;const dbPronto=new Promise(r=>resolveDb=r);
+
+function telaLogin(erro){
+  const v=document.getElementById('view');if(!v)return;
+  v.innerHTML=`<form class="card dayhead" id="loginForm" style="max-width:420px;margin:20px auto">
+    <h2 class="grp">Entrar no caderno</h2>
+    <p class="hint">Use o e-mail e a senha que o dono do caderno cadastrou para você.</p>
+    <label class="field"><span>E-mail</span><input type="text" id="lg-email" inputmode="email" autocomplete="username" autocapitalize="off"></label>
+    <label class="field"><span>Senha</span><input type="password" id="lg-senha" autocomplete="current-password"></label>
+    ${erro?`<p class="hint" style="color:var(--danger)">${erro}</p>`:''}
+    <button class="btn primary wide" type="submit" id="lg-btn">Entrar</button></form>`;
+  document.getElementById('loginForm').addEventListener('submit',async e=>{e.preventDefault();
+    const b=document.getElementById('lg-btn');b.disabled=true;b.textContent='Entrando…';
+    try{await auth.signInWithEmailAndPassword(document.getElementById('lg-email').value.trim(),document.getElementById('lg-senha').value)}
+    catch(err){telaLogin(err&&(err.code==='auth/network-request-failed')?'Sem internet. Conecte e tente de novo.':'E-mail ou senha incorretos.')}});
+}
+let logado=false;
+auth.onAuthStateChanged(u=>{
+  if(u){if(!logado){logado=true;window.LOCAL.email=u.email;resolveDb(fs)}}
+  else{if(logado){location.reload();return}const go=()=>telaLogin();document.readyState==='loading'?document.addEventListener('DOMContentLoaded',go):setTimeout(go,0)}
+});
 window.LOCAL={
-  exportar(){const d=new Date();const p=n=>String(n).padStart(2,'0');baixar('caderno-do-leite-backup-'+d.getFullYear()+'-'+p(d.getMonth()+1)+'-'+p(d.getDate())+'.json',JSON.stringify({app:'caderno-do-leite',versao:1,dados:store},null,1),'application/json')},
-  importar(txt){const o=JSON.parse(txt);if(!o||o.app!=='caderno-do-leite'||typeof o.dados!=='object')throw new Error('arquivo');store=o.dados;save();emit()}
+  email:'',
+  sair(){auth.signOut()},
+  async exportar(){const dados={};for(const c of ['clientes','dias','pagamentos','config']){const s=await fs.collection(c).get();s.docs.forEach(d=>dados[c+'/'+d.id]=d.data())}
+    const d=new Date();const p=n=>String(n).padStart(2,'0');
+    baixar('caderno-do-leite-backup-'+d.getFullYear()+'-'+p(d.getMonth()+1)+'-'+p(d.getDate())+'.json',JSON.stringify({app:'caderno-do-leite',versao:1,dados},null,1),'application/json')}
 };
-try{localStorage.setItem('__t','1');localStorage.removeItem('__t')}catch(e){setTimeout(()=>{const t=document.getElementById('toast');if(t){t.textContent='Atenção: este navegador não está guardando os dados. Abra pelo Chrome ou Safari.';t.hidden=false}},1500)}
-window.claude={use:n=>Promise.resolve(n==='db'?db:n==='downloads'?dl:null)};
+window.claude={use:n=>n==='db'?dbPronto:Promise.resolve(n==='downloads'?dl:null)};
 })();
 </script>
 <script>
@@ -698,7 +704,7 @@ function render(){
   $('#sub').textContent='Leite a '+brl(S.preco)+' o litro';
   $('#savebar').hidden=!(S.tab==='dia'&&S.dirty);
   if(S.semDb){view.innerHTML='<div class="card loading">Não consegui abrir o caderno salvo. Abra esta página pelo Claude, com internet, para ver e anotar seus clientes.</div>';return}
-  if(!S.pronto){view.innerHTML='<p class="loading">Abrindo o caderno…</p>';return}
+  if(!S.pronto){if(!document.getElementById('loginForm'))view.innerHTML='<p class="loading">Abrindo o caderno…</p>';return}
   if(S.tab==='dia')view.innerHTML=telaDia();
   else if(S.tab==='clientes')view.innerHTML=S.aberto&&S.clientes[S.aberto]?telaConta(S.aberto):telaClientes();
   else view.innerHTML=telaAjustes();
@@ -813,7 +819,8 @@ function telaAjustes(){
     <p class="hint">O novo preço vale para as próximas anotações. Os dias já anotados mantêm o preço da época.</p></section>
   <section class="card dayhead"><h2 class="grp">Este mês (${MESES[+mes.slice(5)-1]})</h2>
     <div class="stats"><div class="stat"><b>${lt(l)} L</b><span>entregues</span></div><div class="stat"><b>${brl(v)}</b><span>vendido</span></div><div class="stat"><b>${brl(p)}</b><span>recebido</span></div></div></section>
-  ${window.LOCAL?`<section class="card dayhead"><h2 class="grp">Cópia de segurança</h2><p class="hint">Tudo fica guardado só neste celular. Salve uma cópia de vez em quando (por exemplo, toda semana) e mande para você no WhatsApp ou e-mail. Se trocar de celular ou limpar o navegador, é só restaurar.</p><div class="actions" style="justify-content:flex-start"><button class="btn primary" data-act="backup">Salvar cópia</button><button class="btn" data-act="restaurar">Restaurar cópia</button></div><input type="file" id="arqBackup" accept=".json,application/json" hidden></section>`:''}
+  ${window.LOCAL?`<section class="card dayhead"><h2 class="grp">Conta</h2><p class="hint">Conectado como <b>${esc(window.LOCAL.email)}</b>. Tudo que você anota aparece na hora para as outras pessoas do caderno.</p><div class="actions" style="justify-content:flex-start"><button class="btn" data-act="sair">Sair</button></div></section>
+  <section class="card dayhead"><h2 class="grp">Cópia de segurança</h2><p class="hint">Baixa um arquivo com todos os clientes, dias anotados e pagamentos. Bom guardar um por mês.</p><div class="actions" style="justify-content:flex-start"><button class="btn primary" data-act="backup">Salvar cópia</button></div></section>`:''}
   ${ex?`<section class="card dayhead"><h2 class="grp">Clientes de exemplo</h2><p class="hint">O caderno veio com ${ex} clientes de exemplo para você ver como funciona. Apague quando for cadastrar os seus.</p><button class="btn danger" data-act="apagaEx">Apagar exemplos</button></section>`:''}
   </div>`;
 }
@@ -983,7 +990,8 @@ document.addEventListener('click',async e=>{
   else if(a==='mover')mover(id,+b.dataset.d);
   else if(a==='apagaPag'){const p=S.pags[id];confirma('Apagar pagamento?',`Pagamento de ${brl(p.valor)} em ${dataCurta(p.data)}. A conta do cliente volta a contar esse valor como devido.`,'Apagar',()=>grava(()=>S.db.doc('pagamentos/'+id).delete(),'Pagamento apagado'))}
   else if(a==='preco'){const v=num($('#preco').value);if(v<=0){toast('Informe um preço válido');return}grava(()=>S.db.doc('config/geral').set({preco:v}),'Preço salvo')}
-  else if(a==='backup'){window.LOCAL.exportar();toast('Cópia salva nos downloads')}
+  else if(a==='backup'){window.LOCAL.exportar().then(()=>toast('Cópia salva nos downloads'),()=>toast('Não consegui gerar a cópia. Confira a internet.'))}
+  else if(a==='sair')confirma('Sair do caderno?','Você vai precisar do e-mail e da senha para entrar de novo.','Sair',async()=>window.LOCAL.sair(),false);
   else if(a==='restaurar')confirma('Restaurar cópia?','Os dados atuais deste celular serão trocados pelos da cópia que você escolher.','Escolher arquivo',async()=>{$('#arqBackup').click()},false);
   else if(a==='apagaEx')confirma('Apagar clientes de exemplo?','Os clientes marcados como exemplo e tudo que foi anotado para eles saem do caderno.','Apagar exemplos',apagaExemplos);
 });
